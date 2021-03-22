@@ -14,7 +14,7 @@ import time
 import pandas as pd
 import desed
 from tqdm import tqdm
-
+import soundfile as sf
 import config as cfg
 from utilities.Logger import create_logger
 from utilities.utils import read_audio, meta_path_to_audio_dir
@@ -92,7 +92,11 @@ class DESED:
         ext_freq = ''
         if self.mel_min_max_freq != (0, self.sample_rate / 2):
             ext_freq = f"_{'_'.join(self.mel_min_max_freq)}"
-        feature_dir = osp.join(base_feature_dir, f"sr{self.sample_rate}_win{self.n_window}_hop{self.hop_size}"
+        if cfg.w2v is not None:
+            feature_dir = osp.join(base_feature_dir, f"sr{self.sample_rate}_w2v")
+
+        else:
+            feature_dir = osp.join(base_feature_dir, f"sr{self.sample_rate}_win{self.n_window}_hop{self.hop_size}"
                                                  f"_mels{self.n_mels}{ext_freq}")
         if not self.compute_log:
             feature_dir += "_nolog"
@@ -251,9 +255,12 @@ class DESED:
             raise IOError("File {wav_path} is corrupted!")
         else:
             t1 = time.time()
-            mel_spec = self.calculate_mel_spec(audio, self.compute_log)
+            if cfg.w2v is not None:
+                mel_spec = audio.reshape(1,-1)
+            else:
+                mel_spec = self.calculate_mel_spec(audio, self.compute_log)
             logger.debug(f"compute features time: {time.time() - t1}")
-        return mel_spec
+        return mel_spec #in case of using w2v, mel_spec is not used. (just audio returned)
 
     def _extract_features(self, wav_path, out_path):
         if not osp.exists(out_path):

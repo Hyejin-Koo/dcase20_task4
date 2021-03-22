@@ -69,6 +69,7 @@ class ManyHotEncoder:
             if label_df == 'empty':
                 y = np.zeros((self.n_frames, len(self.labels))) - 1
                 return y
+
         y = np.zeros((self.n_frames, len(self.labels)))
         if type(label_df) is pd.DataFrame:
             if {"onset", "offset", "event_label"}.issubset(label_df.columns):

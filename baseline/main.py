@@ -13,11 +13,14 @@ import torch
 from torch.utils.data import DataLoader
 from torch import nn
 
+import fairseq
+
 from data_utils.Desed import DESED
 from data_utils.DataLoad import DataLoadDf, ConcatDataset, MultiStreamBatchSampler
 from TestModel import _load_crnn
 from evaluation_measures import get_predictions, psds_score, compute_psds_from_operating_points, compute_metrics
 from models.CRNN import CRNN
+from models.WCRNN import WCRNN
 import config as cfg
 from utilities import ramps
 from utilities.Logger import create_logger
@@ -79,6 +82,7 @@ def train(train_loader, model, optimizer, c_epoch, ema_model=None, mask_weak=Non
     log.debug("Nb batches: {}".format(len(train_loader)))
     start = time.time()
     for i, ((batch_input, ema_batch_input), target) in enumerate(train_loader):
+        print("{}/{} step".format(i, len(train_loader)))
         global_step = c_epoch * len(train_loader) + i
         rampup_value = ramps.exp_rampup(global_step, cfg.n_epoch_rampup*len(train_loader))
 
@@ -94,6 +98,8 @@ def train(train_loader, model, optimizer, c_epoch, ema_model=None, mask_weak=Non
 
         loss = None
         # Weak BCE Loss
+        import pdb
+        pdb.set_trace()
         target_weak = target.max(-2)[0]  # Take the max in the time axis
         if mask_weak is not None:
             weak_class_loss = class_criterion(weak_pred[mask_weak], target_weak[mask_weak])
@@ -123,24 +129,24 @@ def train(train_loader, model, optimizer, c_epoch, ema_model=None, mask_weak=Non
                 loss = strong_class_loss
 
         # Teacher-student consistency cost
-        if ema_model is not None:
-            consistency_cost = cfg.max_consistency_cost * rampup_value
-            meters.update('Consistency weight', consistency_cost)
-            # Take consistency about strong predictions (all data)
-            consistency_loss_strong = consistency_cost * consistency_criterion(strong_pred, strong_pred_ema)
-            meters.update('Consistency strong', consistency_loss_strong.item())
-            if loss is not None:
-                loss += consistency_loss_strong
-            else:
-                loss = consistency_loss_strong
-            meters.update('Consistency weight', consistency_cost)
-            # Take consistency about weak predictions (all data)
-            consistency_loss_weak = consistency_cost * consistency_criterion(weak_pred, weak_pred_ema)
-            meters.update('Consistency weak', consistency_loss_weak.item())
-            if loss is not None:
-                loss += consistency_loss_weak
-            else:
-                loss = consistency_loss_weak
+#        if ema_model is not None:
+#            consistency_cost = cfg.max_consistency_cost * rampup_value
+#            meters.update('Consistency weight', consistency_cost)
+#            # Take consistency about strong predictions (all data)
+#            consistency_loss_strong = consistency_cost * consistency_criterion(strong_pred, strong_pred_ema)
+#            meters.update('Consistency strong', consistency_loss_strong.item())
+#            if loss is not None:
+#                loss += consistency_loss_strong
+#            else:
+#                loss = consistency_loss_strong
+#            meters.update('Consistency weight', consistency_cost)
+#            # Take consistency about weak predictions (all data)
+#            consistency_loss_weak = consistency_cost * consistency_criterion(weak_pred, weak_pred_ema)
+#            meters.update('Consistency weak', consistency_loss_weak.item())
+#            if loss is not None:
+#                loss += consistency_loss_weak
+#            else:
+#                loss = consistency_loss_weak
 
         assert not (np.isnan(loss.item()) or loss.item() > 1e5), 'Loss explosion: {}'.format(loss.item())
         assert not loss.item() < 0, 'Loss problem, cannot be negative'
@@ -237,12 +243,14 @@ if __name__ == '__main__':
     n_layers = 7
     crnn_kwargs = {"n_in_channel": n_channel, "nclass": len(cfg.classes), "attention": True, "n_RNN_cell": 128,
                    "n_layers_RNN": 2,
-                   "activation": "glu",
+                   "activation": "leakyrelu",
                    "dropout": 0.5,
                    "kernel_size": n_layers * [3], "padding": n_layers * [1], "stride": n_layers * [1],
                    "nb_filters": [16,  32,  64,  128,  128, 128, 128],
-                   "pooling": [[2, 2], [2, 2], [1, 2], [1, 2], [1, 2], [1, 2], [1, 2]]}
+                   "pooling": [[1, 2], [1, 2], [1, 2], [1, 2], [1, 2], [1, 2], [1, 2]]} #modify [2,2] * 2 => [1,2] * 2
     pooling_time_ratio = 4  # 2 * 2
+    if cfg.w2v is not None:
+        pooling_time_ratio = 4 * 1600
 
     out_nb_frames_1s = cfg.sample_rate / cfg.hop_size / pooling_time_ratio
     median_window = max(int(cfg.median_window_s * out_nb_frames_1s), 1)
@@ -256,7 +264,7 @@ if __name__ == '__main__':
 
     # Meta path for psds
     durations_synth = get_durations_df(cfg.synthetic)
-    many_hot_encoder = ManyHotEncoder(cfg.classes, n_frames=cfg.max_frames // pooling_time_ratio)
+    many_hot_encoder = ManyHotEncoder(cfg.classes, 101) #n_frames=cfg.max_frames // pooling_time_ratio)
     encod_func = many_hot_encoder.encode_strong_df
 
     # Normalisation per audio or on the full dataset
@@ -303,30 +311,41 @@ if __name__ == '__main__':
     # ##############
     # Model
     # ##############
-    crnn = CRNN(**crnn_kwargs)
-    pytorch_total_params = sum(p.numel() for p in crnn.parameters() if p.requires_grad)
-    logger.info(crnn)
+    wcrnn = WCRNN(**crnn_kwargs)
+    pytorch_total_params = sum(p.numel() for p in wcrnn.parameters() if p.requires_grad)
+    logger.info(wcrnn)
     logger.info("number of parameters in the model: {}".format(pytorch_total_params))
-    crnn.apply(weights_init)
+    wcrnn.apply(weights_init)
 
-    crnn_ema = CRNN(**crnn_kwargs)
-    crnn_ema.apply(weights_init)
-    for param in crnn_ema.parameters():
+    ### load Wav2Vec2Model ###
+    w2v_path = './w2v_model.pth'
+    _w2v = torch.load(cfg.w2v, map_location=torch.device('cuda'))
+    _w2v['last_optimizer_state']['param_groups'][0]['amsgrad'] = 'hard'
+    _w2v['cfg']['generation']['print_alignment'] = 'hard'
+    _w2v['cfg']['task']['eval_wer_config']['print_alignment'] = 'hard'
+    torch.save(_w2v, w2v_path)
+
+    wcrnn.w2v = fairseq.checkpoint_utils.load_model_ensemble_and_task([w2v_path])[0][0]
+    
+
+    wcrnn_ema = WCRNN(**crnn_kwargs)
+    wcrnn_ema.apply(weights_init)
+    for param in wcrnn_ema.parameters():
         param.detach_()
 
     optim_kwargs = {"lr": cfg.default_learning_rate, "betas": (0.9, 0.999)}
-    optim = torch.optim.Adam(filter(lambda p: p.requires_grad, crnn.parameters()), **optim_kwargs)
+    optim = torch.optim.Adam(filter(lambda p: p.requires_grad, wcrnn.parameters()), **optim_kwargs)
     bce_loss = nn.BCELoss()
 
     state = {
-        'model': {"name": crnn.__class__.__name__,
+        'model': {"name": wcrnn.__class__.__name__,
                   'args': '',
                   "kwargs": crnn_kwargs,
-                  'state_dict': crnn.state_dict()},
-        'model_ema': {"name": crnn_ema.__class__.__name__,
+                  'state_dict': wcrnn.state_dict()},
+        'model_ema': {"name": wcrnn_ema.__class__.__name__,
                       'args': '',
                       "kwargs": crnn_kwargs,
-                      'state_dict': crnn_ema.state_dict()},
+                      'state_dict': wcrnn_ema.state_dict()},
         'optimizer': {"name": optim.__class__.__name__,
                       'args': '',
                       "kwargs": optim_kwargs,
@@ -350,25 +369,25 @@ if __name__ == '__main__':
     # ##############
     results = pd.DataFrame(columns=["loss", "valid_synth_f1", "weak_metric", "global_valid"])
     for epoch in range(cfg.n_epoch):
-        crnn.train()
-        crnn_ema.train()
-        crnn, crnn_ema = to_cuda_if_available(crnn, crnn_ema)
+        wcrnn.train()
+        wcrnn_ema.train()
+        wcrnn, wcrnn_ema = to_cuda_if_available(wcrnn, wcrnn_ema)
 
-        loss_value = train(training_loader, crnn, optim, epoch,
-                           ema_model=crnn_ema, mask_weak=weak_mask, mask_strong=strong_mask, adjust_lr=cfg.adjust_lr)
+        loss_value = train(training_loader, wcrnn, optim, epoch,
+                           ema_model=wcrnn_ema, mask_weak=weak_mask, mask_strong=strong_mask, adjust_lr=cfg.adjust_lr)
 
         # Validation
-        crnn = crnn.eval()
+        wcrnn = wcrnn.eval()
         logger.info("\n ### Valid synthetic metric ### \n")
-        predictions = get_predictions(crnn, valid_synth_loader, many_hot_encoder.decode_strong, pooling_time_ratio,
+        predictions = get_predictions(wcrnn, valid_synth_loader, many_hot_encoder.decode_strong, pooling_time_ratio,
                                       median_window=median_window, save_predictions=None)
         # Validation with synthetic data (dropping feature_filename for psds)
         valid_synth = dfs["valid_synthetic"].drop("feature_filename", axis=1)
         valid_synth_f1, psds_m_f1 = compute_metrics(predictions, valid_synth, durations_synth)
 
         # Update state
-        state['model']['state_dict'] = crnn.state_dict()
-        state['model_ema']['state_dict'] = crnn_ema.state_dict()
+        state['model']['state_dict'] = wcrnn.state_dict()
+        state['model_ema']['state_dict'] = wcrnn_ema.state_dict()
         state['optimizer']['state_dict'] = optim.state_dict()
         state['epoch'] = epoch
         state['valid_metric'] = valid_synth_f1
@@ -395,7 +414,7 @@ if __name__ == '__main__':
     if cfg.save_best:
         model_fname = os.path.join(saved_model_dir, "baseline_best")
         state = torch.load(model_fname)
-        crnn = _load_crnn(state)
+        wcrnn = _load_crnn(state)
         logger.info(f"testing model: {model_fname}, epoch: {state['epoch']}")
     else:
         logger.info("testing model of last epoch: {}".format(cfg.n_epoch))
@@ -404,7 +423,7 @@ if __name__ == '__main__':
     # ##############
     # Validation
     # ##############
-    crnn.eval()
+    wcrnn.eval()
     transforms_valid = get_transforms(cfg.max_frames, scaler, add_axis_conv)
     predicitons_fname = os.path.join(saved_pred_dir, "baseline_validation.tsv")
 
@@ -414,7 +433,7 @@ if __name__ == '__main__':
     validation_labels_df = dfs["validation"].drop("feature_filename", axis=1)
     durations_validation = get_durations_df(cfg.validation, cfg.audio_validation_dir)
     # Preds with only one value
-    valid_predictions = get_predictions(crnn, validation_dataloader, many_hot_encoder.decode_strong,
+    valid_predictions = get_predictions(wcrnn, validation_dataloader, many_hot_encoder.decode_strong,
                                         pooling_time_ratio, median_window=median_window,
                                         save_predictions=predicitons_fname)
     compute_metrics(valid_predictions, validation_labels_df, durations_validation)
@@ -426,7 +445,7 @@ if __name__ == '__main__':
     n_thresholds = 50
     # Example of 5 thresholds: 0.1, 0.3, 0.5, 0.7, 0.9
     list_thresholds = np.arange(1 / (n_thresholds * 2), 1, 1 / n_thresholds)
-    pred_ss_thresh = get_predictions(crnn, validation_dataloader, many_hot_encoder.decode_strong,
+    pred_ss_thresh = get_predictions(wcrnn, validation_dataloader, many_hot_encoder.decode_strong,
                                      pooling_time_ratio, thresholds=list_thresholds, median_window=median_window,
                                      save_predictions=predicitons_fname)
     psds = compute_psds_from_operating_points(pred_ss_thresh, validation_labels_df, durations_validation)

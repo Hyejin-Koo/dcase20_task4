@@ -94,7 +94,6 @@ class DataLoadDf(Dataset):
 
         """
         features = self.get_feature_file_func(self.feat_filenames.iloc[index])
-
         # event_labels means weak labels, event_label means strong labels
         if "event_labels" in self.df.columns or {"onset", "offset", "event_label"}.issubset(self.df.columns):
             if "event_labels" in self.df.columns:

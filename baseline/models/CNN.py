@@ -43,6 +43,8 @@ class CNN(nn.Module):
         def conv(i, batchNormalization=False, dropout=None, activ="relu"):
             nIn = n_in_channel if i == 0 else nb_filters[i - 1]
             nOut = nb_filters[i]
+            import pdb
+            pdb.set_trace()
             cnn.add_module('conv{0}'.format(i),
                            nn.Conv2d(nIn, nOut, kernel_size[i], stride[i], padding[i]))
             if batchNormalization:
@@ -64,7 +66,7 @@ class CNN(nn.Module):
         # 128x862x64
         for i in range(len(nb_filters)):
             conv(i, batch_norm, conv_dropout, activ=activation)
-            cnn.add_module('pooling{0}'.format(i), nn.AvgPool2d(pooling[i]))  # bs x tframe x mels
+            cnn.add_module('pooling{0}'.format(i), nn.MaxPool2d(pooling[i])) #nn.AvgPool2d # bs x tframe x mels
 
         self.cnn = cnn
 

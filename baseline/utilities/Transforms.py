@@ -4,6 +4,7 @@ import librosa
 import numpy as np
 import torch
 
+import config as cfg
 
 class Transform:
     def transform_data(self, data):
@@ -71,7 +72,12 @@ def pad_trunc_seq(x, max_len):
       ndarray, Padded or truncated input sequence data.
     """
     shape = x.shape
-    if shape[-2] <= max_len:
+    if cfg.w2v is not None:
+        axis = -1
+        max_len -= 1
+    else:
+        axis = -2
+    if shape[axis] <= max_len:
         padded = max_len - shape[-2]
         padded_shape = ((0, 0),)*len(shape[:-2]) + ((0, padded), (0, 0))
         x = np.pad(x, padded_shape, mode="constant")

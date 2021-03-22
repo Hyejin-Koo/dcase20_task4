@@ -6,7 +6,7 @@ import torch
 import json
 from utilities.Logger import create_logger
 
-
+import config as cfg
 logger = create_logger(__name__)
 
 
@@ -23,6 +23,9 @@ class Scaler:
     # compute the mean incrementaly
     def mean(self, data, axis=-1):
         # -1 means have at the end a mean vector of the last dimension
+        if cfg.w2v is not None:
+            axis = 1
+
         if axis == -1:
             mean = data
             while len(mean.shape) != 1:
@@ -62,9 +65,22 @@ class Scaler:
                 shape = batch_x_arr.shape
             else:
                 if not batch_x_arr.shape == shape:
-                    raise NotImplementedError("Not possible to add data with different shape in mean calculation yet")
+                    if batch_x_arr.shape[1]>160000:
+                        batch_x_arr = batch_x[:160000,:]
+                        shape = batch_x_arr.shape
+                    elif batch_x_arr.shape[1]<160000:
+                        import pdb
+                        pdb.set_trace()
+                        pass
+                        #tmp = torch.zeros([1,1,1600000])
+                        #tmp[:,:,:batch_x.shape[1]] = batch_x
+                        #batch_x_arr = tmp
+                    #shape = batch_x_arr.shape
+                    print("Different shape, cut to adjust")
+                    #raise NotImplementedError("Not possible to add data with different shape in mean calculation yet")
 
             # assume first item will have shape info
+            print(batch_x_arr.shape)
             if self.mean_ is None:
                 self.mean_ = self.mean(batch_x_arr, axis=-1)
             else:
