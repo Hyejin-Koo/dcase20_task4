@@ -49,6 +49,8 @@ class Scaler:
         shape = None
 
         counter = 0
+        import pdb
+        pdb.set_trace()
         for sample in dataset:
             if type(sample) in [tuple, list] and len(sample) == 2:
                 batch_x, _ = sample
@@ -80,7 +82,6 @@ class Scaler:
                     #raise NotImplementedError("Not possible to add data with different shape in mean calculation yet")
 
             # assume first item will have shape info
-            print(batch_x_arr.shape)
             if self.mean_ is None:
                 self.mean_ = self.mean(batch_x_arr, axis=-1)
             else:

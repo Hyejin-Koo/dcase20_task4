@@ -56,8 +56,14 @@ def adjust_learning_rate(optimizer, rampup_value, rampdown_value=1):
 def update_ema_variables(model, ema_model, alpha, global_step):
     # Use the true average until the exponential average is more correct
     alpha = min(1 - 1 / (global_step + 1), alpha)
+    i = 0
     for ema_params, params in zip(ema_model.parameters(), model.parameters()):
-        ema_params.data.mul_(alpha).add_(1 - alpha, params.data)
+        try:
+            ema_params.data.mul_(alpha).add_(1 - alpha, params.data)
+            i += 1
+        except:
+            print("pass")
+            pass
 
 
 def train(train_loader, model, optimizer, c_epoch, ema_model=None, mask_weak=None, mask_strong=None, adjust_lr=False):
@@ -91,9 +97,9 @@ def train(train_loader, model, optimizer, c_epoch, ema_model=None, mask_weak=Non
         meters.update('lr', optimizer.param_groups[0]['lr'])
         batch_input, ema_batch_input, target = to_cuda_if_available(batch_input, ema_batch_input, target)
         # Outputs
-        #strong_pred_ema, weak_pred_ema = ema_model(ema_batch_input)
-        #strong_pred_ema = strong_pred_ema.detach()
-        #weak_pred_ema = weak_pred_ema.detach()
+        strong_pred_ema, weak_pred_ema = ema_model(ema_batch_input)
+        strong_pred_ema = strong_pred_ema.detach()
+        weak_pred_ema = weak_pred_ema.detach()
         strong_pred, weak_pred = model(batch_input)
 
         loss = None
@@ -101,24 +107,25 @@ def train(train_loader, model, optimizer, c_epoch, ema_model=None, mask_weak=Non
         target_weak = target.max(-2)[0]  # Take the max in the time axis
         if mask_weak is not None:
             weak_class_loss = class_criterion(weak_pred[mask_weak], target_weak[mask_weak])
-            # ema_class_loss = None #class_criterion(weak_pred_ema[mask_weak], target_weak[mask_weak])
+            ema_class_loss = class_criterion(weak_pred_ema[mask_weak], target_weak[mask_weak])
             loss = weak_class_loss
-#            if i == 0:
-#                log.debug(f"target: {target.mean(-2)} \n Target_weak: {target_weak} \n "
-#                          f"Target weak mask: {target_weak[mask_weak]} \n "
-#                          f"Target strong mask: {target[mask_strong].sum(-2)}\n"
-#                          f"weak loss: {weak_class_loss} \t rampup_value: {rampup_value}"
-#                          f"tensor mean: {batch_input.mean()}")
+
+            if i == 0:
+                log.debug(f"target: {target.mean(-2)} \n Target_weak: {target_weak} \n "
+                          f"Target weak mask: {target_weak[mask_weak]} \n "
+                          f"Target strong mask: {target[mask_strong].sum(-2)}\n"
+                          f"weak loss: {weak_class_loss} \t rampup_value: {rampup_value}"
+                          f"tensor mean: {batch_input.mean()}")
             meters.update('weak_class_loss', weak_class_loss.item())
-            #meters.update('Weak EMA loss', ema_class_loss.item())
+            meters.update('Weak EMA loss', ema_class_loss.item())
 
         # Strong BCE loss
         if mask_strong is not None:
             strong_class_loss = class_criterion(strong_pred[mask_strong], target[mask_strong])
             meters.update('Strong loss', strong_class_loss.item())
 
-            #strong_ema_class_loss = class_criterion(strong_pred_ema[mask_strong], target[mask_strong])
-            #meters.update('Strong EMA loss', strong_ema_class_loss.item())
+            strong_ema_class_loss = class_criterion(strong_pred_ema[mask_strong], target[mask_strong])
+            meters.update('Strong EMA loss', strong_ema_class_loss.item())
 
             if loss is not None:
                 loss += strong_class_loss
@@ -126,24 +133,24 @@ def train(train_loader, model, optimizer, c_epoch, ema_model=None, mask_weak=Non
                 loss = strong_class_loss
 
         # Teacher-student consistency cost
-#        if ema_model is not None:
-#            consistency_cost = cfg.max_consistency_cost * rampup_value
-#            meters.update('Consistency weight', consistency_cost)
-#            # Take consistency about strong predictions (all data)
-#            consistency_loss_strong = consistency_cost * consistency_criterion(strong_pred, strong_pred_ema)
-#            meters.update('Consistency strong', consistency_loss_strong.item())
-#            if loss is not None:
-#                loss += consistency_loss_strong
-#            else:
-#                loss = consistency_loss_strong
-#            meters.update('Consistency weight', consistency_cost)
-#            # Take consistency about weak predictions (all data)
-#            consistency_loss_weak = consistency_cost * consistency_criterion(weak_pred, weak_pred_ema)
-#            meters.update('Consistency weak', consistency_loss_weak.item())
-#            if loss is not None:
-#                loss += consistency_loss_weak
-#            else:
-#                loss = consistency_loss_weak
+        if ema_model is not None:
+            consistency_cost = cfg.max_consistency_cost * rampup_value
+            meters.update('Consistency weight', consistency_cost)
+            # Take consistency about strong predictions (all data)
+            consistency_loss_strong = consistency_cost * consistency_criterion(strong_pred, strong_pred_ema)
+            meters.update('Consistency strong', consistency_loss_strong.item())
+            if loss is not None:
+                loss += consistency_loss_strong
+            else:
+                loss = consistency_loss_strong
+            meters.update('Consistency weight', consistency_cost)
+            # Take consistency about weak predictions (all data)
+            consistency_loss_weak = consistency_cost * consistency_criterion(weak_pred, weak_pred_ema)
+            meters.update('Consistency weak', consistency_loss_weak.item())
+            if loss is not None:
+                loss += consistency_loss_weak
+            else:
+                loss = consistency_loss_weak
 
         assert not (np.isnan(loss.item()) or loss.item() > 1e5), 'Loss explosion: {}'.format(loss.item())
         assert not loss.item() < 0, 'Loss problem, cannot be negative'
@@ -156,7 +163,7 @@ def train(train_loader, model, optimizer, c_epoch, ema_model=None, mask_weak=Non
         global_step += 1
         if ema_model is not None:
             update_ema_variables(model, ema_model, 0.999, global_step)
-        
+
     epoch_time = time.time() - start
     log.info(f"Epoch: {c_epoch}\t Time {epoch_time:.2f}\t {meters}")
     return loss
@@ -188,8 +195,8 @@ def get_dfs(desed_dataset, nb_files=None, separated_sources=False):
     valid_synth_df = synthetic_df.drop(train_synth_df.index).reset_index(drop=True)
     # Put train_synth in frames so many_hot_encoder can work.
     #  Not doing it for valid, because not using labels (when prediction) and event based metric expect sec.
-    train_synth_df.onset = train_synth_df.onset * 101 // 10 #cfg.sample_rate // cfg.hop_size // pooling_time_ratio 
-    train_synth_df.offset = train_synth_df.offset * 101 // 10 #cfg.sample_rate // cfg.hop_size // pooling_time_ratio
+    train_synth_df.onset = train_synth_df.onset * cfg.sample_rate // cfg.hop_size // pooling_time_ratio
+    train_synth_df.offset = train_synth_df.offset * cfg.sample_rate // cfg.hop_size // pooling_time_ratio
     log.debug(valid_synth_df.event_label.value_counts())
 
     data_dfs = {"weak": weak_df,
@@ -216,7 +223,7 @@ if __name__ == '__main__':
     parser.add_argument("-n", '--no_synthetic', dest='no_synthetic', action='store_true', default=False,
                         help="Not using synthetic labels during training")
     f_args = parser.parse_args()
-    pprint(vars(f_args))
+    print(vars(f_args))
 
     reduced_number_of_data = f_args.subpart_data
     no_synthetic = f_args.no_synthetic
@@ -241,16 +248,16 @@ if __name__ == '__main__':
     crnn_kwargs = {"n_in_channel": n_channel, "nclass": len(cfg.classes), "attention": False, "n_RNN_cell": 128,
                    "n_layers_RNN": 2,
                    "activation": "leakyrelu",
-                   "dropout": 0.,
+                   "dropout": 0.5,
                    "kernel_size": n_layers * [3], "padding": n_layers * [1], "stride": n_layers * [1],
                    "nb_filters": [16,  32,  64,  128,  128, 128, 128],
                    "pooling": [[1, 2], [1, 2], [1, 2], [1, 2], [1, 2], [1, 2], [1, 2]]} #modify [2,2] * 2 => [1,2] * 2
     pooling_time_ratio = 4  # 2 * 2
     if cfg.w2v is not None:
-        pooling_time_ratio = 1600 *4
+        pooling_time_ratio = 4 * 1600
 
     out_nb_frames_1s = cfg.sample_rate / cfg.hop_size / pooling_time_ratio
-    median_window = 7#max(int(cfg.median_window_s * out_nb_frames_1s), 1)
+    median_window = max(int(cfg.median_window_s * out_nb_frames_1s), 1)
     logger.debug(f"median_window: {median_window}")
     # ##############
     # DATA
@@ -265,20 +272,22 @@ if __name__ == '__main__':
     encod_func = many_hot_encoder.encode_strong_df
 
     # Normalisation per audio or on the full dataset
-#    if cfg.scaler_type == "dataset":
-#        transforms = get_transforms(cfg.max_frames, add_axis=add_axis_conv)
-#        weak_data = DataLoadDf(dfs["weak"], encod_func, transforms)
-#        unlabel_data = DataLoadDf(dfs["unlabel"], encod_func, transforms)
-#        train_synth_data = DataLoadDf(dfs["train_synthetic"], encod_func, transforms)
-#        scaler_args = []
-#        scaler = Scaler()
-#        # # Only on real data since that's our final goal and test data are real
-#        scaler.calculate_scaler(ConcatDataset([weak_data, unlabel_data, train_synth_data]))
-#        logger.debug(f"scaler mean: {scaler.mean_}")
-#    else:
-#        scaler_args = ["global", "min-max"]
-#        scaler = ScalerPerAudio(*scaler_args)
-    scaler=None
+    if cfg.scaler_type == "dataset":
+        transforms = get_transforms(cfg.max_frames, add_axis=add_axis_conv)
+        weak_data = DataLoadDf(dfs["weak"], encod_func, transforms)
+        unlabel_data = DataLoadDf(dfs["unlabel"], encod_func, transforms)
+        train_synth_data = DataLoadDf(dfs["train_synthetic"], encod_func, transforms)
+        scaler_args = []
+        scaler = Scaler()
+        import pdb
+        pdb.set_trace()
+        # # Only on real data since that's our final goal and test data are real
+        scaler.calculate_scaler(ConcatDataset([weak_data, unlabel_data, train_synth_data]))
+        logger.debug(f"scaler mean: {scaler.mean_}")
+    else:
+        scaler_args = ["global", "min-max"]
+        scaler = ScalerPerAudio(*scaler_args)
+
     transforms = get_transforms(cfg.max_frames, scaler, add_axis_conv,
                                 noise_dict_params={"mean": 0., "snr": cfg.noise_snr})
     transforms_valid = get_transforms(cfg.max_frames, scaler, add_axis_conv)
@@ -324,6 +333,9 @@ if __name__ == '__main__':
     w2v = torch.load(w2v_path)
     tmp_dict = w2v['model']
     w2v_cfg = w2v['cfg']['model']
+#    del(tmp_dict['quantizer.vars'])
+#    del(tmp_dict['quantizer.weight_proj.weight'])
+#    del(tmp_dict['quantizer.weight_proj.bias'])
 
     # ##############
     # Model
@@ -334,12 +346,14 @@ if __name__ == '__main__':
     logger.info("number of parameters in the model: {}".format(pytorch_total_params))
     wcrnn.apply(weights_init)
 
-
-    wcrnn.w2v.load_state_dict(tmp_dict) # = fairseq.checkpoint_utils.load_model_ensemble_and_task([w2v_path])[0][0]
+    wcrnn.w2v.load_state_dict(tmp_dict) #torch.load(w2v_path)['model']) #fairseq.checkpoint_utils.load_model_ensemble_and_task([w2v_path])[0][0]
     
 
-    wcrnn_ema = WCRNN(w2v_cfg, **crnn_kwargs)
+    wcrnn_ema = WCRNN(w2v_cfg,**crnn_kwargs)
     wcrnn_ema.apply(weights_init)
+
+    wcrnn_ema.w2v.load_state_dict(tmp_dict) #torch.load(w2v_path)['model']) #fairseq.checkpoint_utils.load_model_ensemble_and_task([w2v_path])[0][0]
+ 
     for param in wcrnn_ema.parameters():
         param.detach_()
 
@@ -350,8 +364,8 @@ if __name__ == '__main__':
     state = {
         'model': {"name": wcrnn.__class__.__name__,
                   'args': '',
-                  "kwargs": crnn_kwargs,
-                  'state_dict': wcrnn.state_dict()},
+                  'kwargs': crnn_kwargs,
+                  'stat_dict': wcrnn.state_dict()},
         'model_ema': {"name": wcrnn_ema.__class__.__name__,
                       'args': '',
                       "kwargs": crnn_kwargs,
@@ -361,10 +375,10 @@ if __name__ == '__main__':
                       "kwargs": optim_kwargs,
                       'state_dict': optim.state_dict()},
         "pooling_time_ratio": pooling_time_ratio,
-#        "scaler": {
-#            "type": type(scaler).__name__,
-#            "args": scaler_args,
-#            "state_dict": scaler.state_dict()},
+        "scaler": {
+            "type": type(scaler).__name__,
+            "args": scaler_args,
+            "state_dict": scaler.state_dict()},
         "many_hot_encoder": many_hot_encoder.state_dict(),
         "median_window": median_window,
         "desed": dataset.state_dict()
@@ -374,9 +388,6 @@ if __name__ == '__main__':
     if cfg.early_stopping is not None:
         early_stopping_call = EarlyStopping(patience=cfg.early_stopping, val_comp="sup", init_patience=cfg.es_init_wait)
 
-    # in case of not using ema_model
-    wcrnn_ema = None
-
 
     # ##############
     # Train
@@ -384,13 +395,11 @@ if __name__ == '__main__':
     results = pd.DataFrame(columns=["loss", "valid_synth_f1", "weak_metric", "global_valid"])
     for epoch in range(cfg.n_epoch):
         wcrnn.train()
-        #wcrnn_ema.train()
-        #wcrnn, wcrnn_ema = to_cuda_if_available(wcrnn, wcrnn_ema)
-        wcrnn = to_cuda_if_available(wcrnn)
+        wcrnn_ema.train()
+        wcrnn, wcrnn_ema = to_cuda_if_available(wcrnn, wcrnn_ema)
 
         loss_value = train(training_loader, wcrnn, optim, epoch,
-                           ema_model=None, mask_weak=weak_mask, mask_strong=strong_mask, adjust_lr=cfg.adjust_lr)
-                           #ema_model=wcrnn_ema, mask_weak=weak_mask, mask_strong=strong_mask, adjust_lr=cfg.adjust_lr)
+                           ema_model=wcrnn_ema, mask_weak=weak_mask, mask_strong=strong_mask, adjust_lr=cfg.adjust_lr)
         # Validation
         wcrnn = wcrnn.eval()
         logger.info("\n ### Valid synthetic metric ### \n")
@@ -402,7 +411,7 @@ if __name__ == '__main__':
 
         # Update state
         state['model']['state_dict'] = wcrnn.state_dict()
-#        state['model_ema']['state_dict'] = wcrnn_ema.state_dict()
+        state['model_ema']['state_dict'] = wcrnn_ema.state_dict()
         state['optimizer']['state_dict'] = optim.state_dict()
         state['epoch'] = epoch
         state['valid_metric'] = valid_synth_f1

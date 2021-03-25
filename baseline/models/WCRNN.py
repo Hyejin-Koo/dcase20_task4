@@ -38,12 +38,12 @@ from fairseq.modules import LayerNorm, PositionalEmbedding, TransformerDecoderLa
 # @register_model("wav2vec_crnn", dataclass=Wav2vec2SedConfig)
 class WCRNN(nn.Module): #, BaseFairseqModel):
 
-    def __init__(self, n_in_channel, nclass, attention=False, activation="Relu", dropout=0,
+    def __init__(self, w2v_cfg, n_in_channel, nclass, attention=False, activation="Relu", dropout=0,
                  train_cnn=True, rnn_type='BGRU', n_RNN_cell=64, n_layers_RNN=1, dropout_recurrent=0,
                  cnn_integration=False, **kwargs):
         super(WCRNN, self).__init__()
 
-        self.w2v = w2v_encoder(Wav2Vec2Config)
+        self.w2v = w2v_encoder(w2v_cfg) #Wav2Vec2Config)
         #self.w2v = Wav2VecEncoder(Wav2Vec2SedConfig, None)
         self.pooling = nn.Sequential(
                 nn.MaxPool2d((1,4), (1,4))
@@ -100,8 +100,8 @@ class WCRNN(nn.Module): #, BaseFairseqModel):
         parameters = {'w2v': self.w2v.state_dict(), 'cnn': self.cnn.state_dict(), 'rnn': self.rnn.state_dict(), 'dense': self.dense.state_dict()}
         torch.save(parameters, filename)
 
-    def forward(self, x):
-        x = x.squeeze()
+    def forward(self, audio):
+        x = audio.squeeze()
         import pdb;
         pdb.set_trace()
         feature = self.w2v(x)
@@ -116,6 +116,7 @@ class WCRNN(nn.Module): #, BaseFairseqModel):
             x = x.view(bs_in * nc_in, 1, *x.shape[2:])
 
         # conv features
+        before = x
         x = self.cnn(x)
         bs, chan, frames, freq = x.size()
         if self.cnn_integration:
@@ -138,12 +139,12 @@ class WCRNN(nn.Module): #, BaseFairseqModel):
             sof = self.dense_softmax(x)  # [bs, frames, nclass]
             sof = self.softmax(sof)
             sof = torch.clamp(sof, min=1e-7, max=1)
-            weak = (strong * sof).sum(1) / sof.sum(1)   # [bs, nclass]
+            weak = (strong * sof).sum(1) / (sof.sum(1)+1e-08)   # [bs, nclass]
         else:
             weak = strong.mean(1)
         return strong, weak
 
 
 if __name__ == '__main__':
-    CRNN(64, 10, kernel_size=[3, 3, 3], padding=[1, 1, 1], stride=[1, 1, 1], nb_filters=[64, 64, 64],
+    WCRNN(w2v_config, 64, 10, kernel_size=[3, 3, 3], padding=[1, 1, 1], stride=[1, 1, 1], nb_filters=[64, 64, 64],
          pooling=[(1, 4), (1, 4), (1, 4)])

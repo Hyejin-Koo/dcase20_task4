@@ -47,7 +47,7 @@ max_consistency_cost = 2
 # Training
 in_memory = True
 in_memory_unlab = False
-num_workers = 8
+num_workers = 1
 batch_size = 8
 noise_snr = 30
 
@@ -58,7 +58,7 @@ checkpoint_epochs = 1
 save_best = True
 early_stopping = None
 es_init_wait = 50  # es for early stopping
-adjust_lr = True
+adjust_lr = False
 max_learning_rate = 0.001  # Used if adjust_lr is True
 default_learning_rate = 0.001  # Used if adjust_lr is False
 

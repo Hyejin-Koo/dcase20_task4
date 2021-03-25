@@ -146,7 +146,6 @@ class DataLoadDf(Dataset):
 
         if self.return_indexes:
             sample = (sample, index)
-
         return sample
 
     def set_transform(self, transform):

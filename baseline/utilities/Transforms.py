@@ -72,14 +72,14 @@ def pad_trunc_seq(x, max_len):
       ndarray, Padded or truncated input sequence data.
     """
     shape = x.shape
-    if cfg.w2v is not None:
-        axis = -1
-        max_len -= 1
-    else:
-        axis = -2
+    axis = -1 if cfg.w2v is not None else -2
+
     if shape[axis] <= max_len:
-        padded = max_len - shape[-2]
-        padded_shape = ((0, 0),)*len(shape[:-2]) + ((0, padded), (0, 0))
+        padded = max_len - shape[axis]
+        if cfg.w2v is None:
+            padded_shape = ((0, 0),)*len(shape[:-2]) + ((0, padded), (0, 0))
+        else:
+            padded_shape = ((0, 0),)*len(shape[:-2]) + ((0, 0), (padded, 0))
         x = np.pad(x, padded_shape, mode="constant")
     else:
         x = x[..., :max_len, :]
@@ -153,7 +153,7 @@ class AugmentGaussianNoise(Transform):
             warnings.warn(f"the computed noise did not work std: {std}, using 0.5 for std instead")
             noise = np.random.normal(0, 0.5, features.shape)
 
-        return features + noise
+        return features #+ noise
 
     def transform_data(self, data):
         """ Apply the transformation on data
@@ -301,7 +301,9 @@ def get_transforms(frames=None, scaler=None, add_axis=0, noise_dict_params=None,
     if noise_dict_params is not None:
         transf.append(AugmentGaussianNoise(**noise_dict_params))
 
-    transf.append(ApplyLog())
+    if frames != 160000:
+        print("log scale applied")
+        transf.append(ApplyLog())
 
     if frames is not None:
         transf.append(PadOrTrunc(nb_frames=frames))

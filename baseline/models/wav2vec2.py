@@ -82,7 +82,7 @@ class Wav2Vec2Config(FairseqDataclass):
     )
 
     final_dim: int = field(
-        default=0,
+        default=256,
         metadata={
             "help": "project final representations and targets to this many dimensions."
             "set to encoder_embed_dim is <= 0"
@@ -271,7 +271,6 @@ class Wav2Vec2Model(BaseFairseqModel):
         self.logit_temp = cfg.logit_temp
 
         final_dim = cfg.final_dim if cfg.final_dim > 0 else cfg.encoder_embed_dim
-
         if cfg.quantize_targets:
             vq_dim = cfg.latent_dim if cfg.latent_dim > 0 else final_dim
             self.quantizer = GumbelVectorQuantizer(
@@ -285,8 +284,7 @@ class Wav2Vec2Model(BaseFairseqModel):
             )
             self.project_q = nn.Linear(vq_dim, final_dim)
         else:
-            self.project_q = nn.Linear(self.embed, final_dim)
-
+            self.project_q = nn.Linear(self.embed, final_dim) # //2 is added
         if cfg.quantize_input:
             if cfg.same_quantizer and self.quantizer is not None:
                 vq_dim = final_dim
@@ -428,7 +426,6 @@ class Wav2Vec2Model(BaseFairseqModel):
         return negs, neg_idxs
 
     def compute_preds(self, x, y, negatives):
-        #import pdb; pdb.set_trace()
         neg_is_pos = (y == negatives).all(-1)
         y = y.unsqueeze(0)
         targets = torch.cat([y, negatives], dim=0)
@@ -443,7 +440,6 @@ class Wav2Vec2Model(BaseFairseqModel):
         return logits
 
     def forward(self, source, padding_mask=None, mask=True, features_only=False):
-
         if self.feature_grad_mult > 0:
             features = self.feature_extractor(source)
             if self.feature_grad_mult != 1.0:
@@ -546,9 +542,10 @@ class Wav2Vec2Model(BaseFairseqModel):
             negs = self.target_glu(negs)
 
         x = self.final_proj(x)
+        before = x
         x = self.compute_preds(x, y, negs)
 
-        result = {"x": x, "padding_mask": padding_mask, "features_pen": features_pen}
+        result = {"x": x, "bef":before, "padding_mask": padding_mask, "features_pen": features_pen}
 
         if prob_ppl is not None:
             result["prob_perplexity"] = prob_ppl
